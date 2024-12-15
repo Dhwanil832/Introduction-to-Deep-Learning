@@ -1,0 +1,214 @@
+# ----- step_01 Get the article's link
+import requests
+from bs4 import BeautifulSoup
+import csv
+import time
+
+# Base URL and request headers
+BASE_URL = "https://www.purdue.edu/newsroom/articles/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
+# Output file
+OUTPUT_FILE = 'articles.csv'
+
+
+# Fetch a single page's content with retry mechanism
+def fetch_page(page, retries=3):
+    """Fetch data from a single page and parse article information"""
+    url = f"{BASE_URL}?order=DESC&orderby=date&paged={page}&custom_post_type=post,purduetoday"
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=10)
+            response.raise_for_status()  # Check HTTP status
+            soup = BeautifulSoup(response.text, "html.parser")
+            articles = parse_articles(soup)
+            return articles
+        except requests.RequestException as e:
+            print(f"Error fetching page {page} (attempt {attempt + 1}/{retries}): {e}")
+            time.sleep(5)  # Wait before retrying
+    print(f"Failed to fetch page {page} after {retries} attempts. Skipping...")
+    return []
+
+
+# Parse article information
+def parse_articles(soup):
+    """Extract article details from the page"""
+    articles = []
+    article_elements = soup.find_all('a', class_='post-type-article')
+    if not article_elements:
+        return articles  # Return an empty list if no articles found
+
+    for article in article_elements:
+        link = article.get('href', 'No link')
+        title_element = article.find('p', class_='purdue-home-cta-grid__card-title')
+        title = title_element.get_text(strip=True) if title_element else 'No title'
+        date_element = article.find('span', class_='purdue-date-tag')
+        date = date_element.get_text(strip=True) if date_element else 'No date'
+        articles.append({'Title': title, 'Link': link, 'Date': date})
+    return articles
+
+
+# Save articles to CSV
+def save_to_csv(articles, filename):
+    """Save article details to a CSV file"""
+    with open(filename, 'a', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['Title', 'Link', 'Date']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        # Write header only if file is empty
+        if csvfile.tell() == 0:
+            writer.writeheader()
+
+        writer.writerows(articles)
+    print(f"{len(articles)} articles saved to {filename}")
+
+
+# Main function
+def main():
+    all_articles = []
+    page = 68
+
+    while True:
+        print(f"Fetching page {page}...")
+        articles = fetch_page(page)
+        if not articles:  # Exit loop if no articles are found
+            print("No more articles found. Exiting pagination loop.")
+            break
+
+        # Append new articles to the total list
+        all_articles.extend(articles)
+        print(f"Page {page} scraped successfully. {len(articles)} articles found.")
+
+        # Save articles immediately after fetching
+        save_to_csv(articles, OUTPUT_FILE)
+
+        page += 1
+        time.sleep(2)  # Add delay to avoid overwhelming the server
+
+    print("Scraping completed.")
+
+
+# Run the main function
+if __name__ == "__main__":
+    main()
+
+
+# ----- step_02 get article's contents
+import csv
+from bs4 import BeautifulSoup
+import requests
+import json
+
+
+def extract_article_content(url):
+    """Extracts the title, date, author, and body content of a Purdue news article."""
+    try:
+        # Request the webpage
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()  # Check for request errors
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        # Extract the title
+        title = soup.find("h1", id="main-heading").get_text(strip=True)
+
+        # Extract the date
+        date = soup.find("span", class_="post-date").get_text(strip=True)
+
+        # Extract the author
+        author_element = soup.find("span", class_="post-author")
+        author = author_element.get_text(strip=True) if author_element else "Unknown Author"
+
+        # Extract the body content
+        body_section = soup.find("div", class_="post-content__body")
+        paragraphs = body_section.find_all("p")
+        body_content = "\n".join([paragraph.get_text(strip=True) for paragraph in paragraphs])
+
+        return {
+            "title": title,
+            "date": date,
+            "author": author,
+            "content": body_content,
+        }
+    except Exception as e:
+        print(f"Error extracting article content from {url}: {e}")
+        return None
+
+
+def save_as_jsonl(articles, file_path):
+    """Saves a list of articles in JSONL format."""
+    with open(file_path, "w", encoding="utf-8") as file:
+        for article in articles:
+            json.dump(article, file, ensure_ascii=False)
+            file.write("\n")
+
+
+def process_csv_and_scrape(csv_file, output_jsonl):
+    """Reads links from a CSV file and scrapes the articles."""
+    articles = []
+    with open(csv_file, "r", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            title = row.get("Title", "No Title")
+            link = row.get("Link")
+            date = row.get("Date", "Unknown Date")
+
+            if link:
+                print(f"Scraping article: {title}")
+                article_content = extract_article_content(link)
+                if article_content:
+                    # Add the CSV-provided title and date to the scraped content
+                    article_content["csv_title"] = title
+                    article_content["csv_date"] = date
+                    articles.append(article_content)
+
+    # Save all articles to a JSONL file
+    save_as_jsonl(articles, output_jsonl)
+    print(f"Saved {len(articles)} articles to '{output_jsonl}'.")
+
+
+# Example usage
+csv_file = "articles.csv"  # Replace with your CSV file name
+output_jsonl = "aa_for_test.jsonl"
+process_csv_and_scrape(csv_file, output_jsonl)
+
+
+# ----- step_03 transfer the date formate
+import json
+from datetime import datetime
+
+
+def convert_date_to_iso(file_path, output_path):
+    try:
+        # Read JSON data
+        with open(file_path, 'r', encoding='utf-8') as file:
+            data = [json.loads(line) for line in file]
+
+        # Iterate through each record and convert date format
+        for record in data:
+            if "date" in record:
+                try:
+                    # Parse the original date and convert to ISO format
+                    original_date = record["date"]
+                    iso_date = datetime.strptime(original_date, "%B %d, %Y").strftime("%Y-%m-%d")
+                    record["date"] = iso_date
+                except ValueError as e:
+                    print(f"Error parsing date for record: {record}. Error: {e}")
+
+        # Write the converted data back to a new JSON file
+        with open(output_path, 'w', encoding='utf-8') as output_file:
+            for record in data:
+                output_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        print(f"Date conversion complete! Updated file saved to: {output_path}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+# Input and output file paths
+input_file = "scraped_articles.jsonl"  # Replace with your input file path
+output_file = "purdue_article.jsonl"  # Replace with your output file path
+
+# Call the function
+convert_date_to_iso(input_file, output_file)
